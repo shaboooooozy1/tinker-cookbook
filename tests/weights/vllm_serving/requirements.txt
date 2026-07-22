@@ -8,7 +8,7 @@
 #   /tmp/vllm-test-env/bin/pip install -r tests/weights/vllm_serving/requirements.txt
 #   /tmp/vllm-test-env/bin/pip install -e .
 #
-vllm>=0.18.0
+vllm>=0.25.1
 safetensors
 huggingface-hub
 pytest
