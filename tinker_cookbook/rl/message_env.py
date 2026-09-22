@@ -51,6 +51,13 @@ class EnvFromMessageEnv(types.Env):
 
     This bridges the message-level abstraction to the token-level interface
     expected by the RL training loop.
+
+    When sampling stops because max_tokens was reached (``extra["stop_reason"] ==
+    "length"``), the episode always ends: the response has no end-of-turn token, so
+    the conversation cannot continue. By default the response is discarded and
+    ``context_overflow_reward`` is assigned. With ``grade_truncated_response=True``
+    the response is still parsed (best effort, without a stop token) and passed to
+    the MessageEnv so that its reward is kept.
     """
 
     def __init__(
@@ -62,6 +69,7 @@ class EnvFromMessageEnv(types.Env):
         max_trajectory_tokens: int | None = None,
         max_generation_tokens: int | None = None,
         context_overflow_reward: float = -0.1,
+        grade_truncated_response: bool = False,
     ):
         self.renderer = renderer
         self.message_env = message_env
@@ -70,6 +78,7 @@ class EnvFromMessageEnv(types.Env):
         self.max_trajectory_tokens = max_trajectory_tokens
         self.max_generation_tokens = max_generation_tokens
         self.context_overflow_reward = context_overflow_reward
+        self.grade_truncated_response = grade_truncated_response
         self._base_stop_condition = renderer.get_stop_sequences()
 
     async def _render_in_thread(self, messages: list[Message], **kwargs) -> tinker.ModelInput:
@@ -112,6 +121,8 @@ class EnvFromMessageEnv(types.Env):
         # the episode early. Previous turns' logprobs are preserved in the trajectory.
         stop_reason = (extra or {}).get("stop_reason", "stop")
         if stop_reason == "length":
+            if self.grade_truncated_response:
+                return await self._step_truncated(action)
             return types.StepResult(
                 reward=self.context_overflow_reward,
                 episode_done=True,
@@ -155,5 +166,22 @@ class EnvFromMessageEnv(types.Env):
             next_observation=next_observation,
             next_stop_condition=next_stop_condition,
             metrics=msg_step.metrics,
+            logs=msg_step.logs,
+        )
+
+    async def _step_truncated(self, action: types.Action) -> types.StepResult:
+        """Grade a response that hit max_tokens, then end the episode."""
+        # A truncated response never contains the stop token, so parse_response reports
+        # failure; the best-effort message it returns is still the model's full output.
+        assistant_message, _ = self.renderer.parse_response(action)
+        msg_step = await self.message_env.step(assistant_message)
+        # There is no end-of-turn token to continue from, so the episode ends even if
+        # the MessageEnv did not end it.
+        return types.StepResult(
+            reward=msg_step.reward,
+            episode_done=True,
+            next_observation=tinker.ModelInput.empty(),
+            next_stop_condition=self._base_stop_condition,
+            metrics={**msg_step.metrics, "max_tokens_reached": 1.0},
             logs=msg_step.logs,
         )

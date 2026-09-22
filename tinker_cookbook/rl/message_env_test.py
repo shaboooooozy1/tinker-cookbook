@@ -556,6 +556,92 @@ class TestMaxTokensReached:
         assert len(msg_env.step_calls) == 1
 
 
+class TestGradeTruncatedResponse:
+    def test_graded_reward_kept_when_env_ends_episode(self):
+        """With grade_truncated_response=True, the MessageEnv grades the truncated response."""
+        truncated_message: Message = {"role": "assistant", "content": "partial answer"}
+        # A truncated response has no stop token: the renderer reports a parse failure
+        # but still returns the best-effort message.
+        renderer = _make_renderer(parse_message=truncated_message, parse_success=False)
+        msg_env = StubMessageEnv(
+            initial_messages=[],
+            step_result=MessageStepResult(
+                reward=0.9,
+                episode_done=True,
+                next_messages=[],
+                metrics={"correct": 1.0},
+                logs={"assistant_content": "partial answer"},
+            ),
+        )
+        env = EnvFromMessageEnv(
+            renderer=renderer,
+            message_env=msg_env,
+            failed_parse_reward=-2.0,
+            grade_truncated_response=True,
+        )
+
+        result = asyncio.run(env.step([1, 2, 3], extra={"stop_reason": "length"}))
+
+        assert msg_env.step_calls == [truncated_message]
+        # The parse failure is expected and must not be scored as a parse error
+        assert result.reward == 0.9
+        assert result.episode_done is True
+        assert result.next_observation.length == 0
+        assert result.metrics == {"correct": 1.0, "max_tokens_reached": 1.0}
+        assert result.logs == {"assistant_content": "partial answer"}
+
+    def test_episode_ends_even_if_env_would_continue(self):
+        """A truncated response cannot be continued, so the episode ends regardless."""
+        renderer = _make_renderer(parse_success=False)
+        msg_env = StubMessageEnv(
+            initial_messages=[],
+            step_result=MessageStepResult(
+                reward=0.3,
+                episode_done=False,
+                next_messages=[{"role": "user", "content": "x"}],
+            ),
+        )
+        # A context limit that any next prompt would exceed: it must not apply here
+        env = EnvFromMessageEnv(
+            renderer=renderer,
+            message_env=msg_env,
+            max_trajectory_tokens=1,
+            grade_truncated_response=True,
+        )
+
+        result = asyncio.run(env.step([1, 2, 3], extra={"stop_reason": "length"}))
+
+        assert result.reward == 0.3
+        assert result.episode_done is True
+        assert result.next_observation.length == 0
+        assert result.metrics["max_tokens_reached"] == 1.0
+        assert "context_overflow" not in result.metrics
+        # A terminated episode has no next prompt to render
+        renderer.build_generation_prompt.assert_not_called()
+
+    def test_stop_reason_stop_unaffected(self):
+        """The flag only changes handling of stop_reason='length'."""
+        renderer = _make_renderer(gen_prompt_tokens=[10, 20])
+        msg_env = StubMessageEnv(
+            initial_messages=[],
+            step_result=MessageStepResult(
+                reward=0.7,
+                episode_done=False,
+                next_messages=[{"role": "user", "content": "x"}],
+            ),
+        )
+        env = EnvFromMessageEnv(
+            renderer=renderer, message_env=msg_env, grade_truncated_response=True
+        )
+
+        result = asyncio.run(env.step([1, 2], extra={"stop_reason": "stop"}))
+
+        assert result.reward == 0.7
+        assert result.episode_done is False
+        assert result.next_observation.length == 2
+        assert "max_tokens_reached" not in result.metrics
+
+
 class TestStepThreading:
     def test_step_renders_in_thread(self):
         """On successful parse, the next observation rendering should use to_thread."""

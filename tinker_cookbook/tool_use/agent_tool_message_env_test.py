@@ -2,11 +2,15 @@
 
 import asyncio
 from typing import Any
+from unittest.mock import MagicMock
 
 from PIL import Image
 
 from tinker_cookbook.renderers.base import ImagePart, Message, TextPart, ToolCall, ToolSpec
-from tinker_cookbook.tool_use.agent_tool_message_env import AgentToolMessageEnv
+from tinker_cookbook.tool_use.agent_tool_message_env import (
+    AgentToolMessageEnv,
+    build_agent_tool_env,
+)
 from tinker_cookbook.tool_use.tools import simple_tool_result
 from tinker_cookbook.tool_use.types import ToolInput, ToolResult
 
@@ -348,3 +352,35 @@ class TestMultimodalToolResults:
         tool_log = str(result.logs["tool_result_0"])
         assert "<image>Image(10x10, RGB)</image>" in tool_log
         assert "Screenshot taken" in tool_log
+
+
+class TestBuildAgentToolEnv:
+    def _make_renderer(self) -> MagicMock:
+        renderer = MagicMock()
+        renderer.get_stop_sequences = MagicMock(return_value=["<stop>"])
+        return renderer
+
+    def test_forwards_truncation_options(self):
+        """Truncation options reach the EnvFromMessageEnv adapter."""
+        env = build_agent_tool_env(
+            renderer=self._make_renderer(),
+            tools=[],
+            initial_messages=[],
+            reward_fn=_noop_reward,
+            context_overflow_reward=-0.5,
+            grade_truncated_response=True,
+        )
+
+        assert isinstance(env.message_env, AgentToolMessageEnv)
+        assert env.context_overflow_reward == -0.5
+        assert env.grade_truncated_response is True
+
+    def test_grading_truncated_responses_is_off_by_default(self):
+        env = build_agent_tool_env(
+            renderer=self._make_renderer(),
+            tools=[],
+            initial_messages=[],
+            reward_fn=_noop_reward,
+        )
+
+        assert env.grade_truncated_response is False
