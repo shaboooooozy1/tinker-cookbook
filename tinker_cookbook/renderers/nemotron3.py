@@ -322,6 +322,8 @@ class Nemotron3DisableThinkingRenderer(Nemotron3Renderer):
     <think></think> (no trailing newlines) instead of <think>\\n.
     """
 
+    _prefills_reasoning = False
+
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
         maybe_newline = "\n" if ctx.idx > 0 else ""
         header_str = f"{maybe_newline}<|im_start|>{role}\n<think></think>"

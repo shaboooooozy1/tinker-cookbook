@@ -14,8 +14,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import tinker
 
-from tinker_cookbook.renderers.base import Message
+from tinker_cookbook.renderers.base import Message, ToolCall
 from tinker_cookbook.rl.message_env import EnvFromMessageEnv, MessageEnv, MessageStepResult
+from tinker_cookbook.rl.types import ActionExtra
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -51,6 +52,7 @@ def _make_renderer(
     stop_sequences: list[str] | None = None,
     parse_message: Message | None = None,
     parse_success: bool = True,
+    truncated_message: Message | None = None,
 ) -> MagicMock:
     """Build a mock Renderer with the methods EnvFromMessageEnv calls."""
     renderer = MagicMock()
@@ -64,6 +66,7 @@ def _make_renderer(
             parse_success,
         )
     )
+    renderer.parse_truncated_response = MagicMock(return_value=truncated_message)
     return renderer
 
 
@@ -557,12 +560,11 @@ class TestMaxTokensReached:
 
 
 class TestGradeTruncatedResponse:
+    _ANSWER: Message = {"role": "assistant", "content": "partial answer"}
+
     def test_graded_reward_kept_when_env_ends_episode(self):
-        """With grade_truncated_response=True, the MessageEnv grades the truncated response."""
-        truncated_message: Message = {"role": "assistant", "content": "partial answer"}
-        # A truncated response has no stop token: the renderer reports a parse failure
-        # but still returns the best-effort message.
-        renderer = _make_renderer(parse_message=truncated_message, parse_success=False)
+        """With grade_truncated_response=True, the MessageEnv grades the truncated answer."""
+        renderer = _make_renderer(truncated_message=self._ANSWER)
         msg_env = StubMessageEnv(
             initial_messages=[],
             step_result=MessageStepResult(
@@ -582,17 +584,67 @@ class TestGradeTruncatedResponse:
 
         result = asyncio.run(env.step([1, 2, 3], extra={"stop_reason": "length"}))
 
-        assert msg_env.step_calls == [truncated_message]
-        # The parse failure is expected and must not be scored as a parse error
+        renderer.parse_truncated_response.assert_called_once_with([1, 2, 3])
+        renderer.parse_response.assert_not_called()
+        assert msg_env.step_calls == [self._ANSWER]
         assert result.reward == 0.9
         assert result.episode_done is True
         assert result.next_observation.length == 0
-        assert result.metrics == {"correct": 1.0, "max_tokens_reached": 1.0}
+        assert result.metrics == {
+            "correct": 1.0,
+            "max_tokens_reached": 1.0,
+            "max_tokens_graded": 1.0,
+        }
         assert result.logs == {"assistant_content": "partial answer"}
+
+    def test_overflow_reward_when_renderer_finds_no_answer(self):
+        """A cut inside reasoning (parse_truncated_response -> None) is not graded."""
+        renderer = _make_renderer(truncated_message=None)
+        msg_env = StubMessageEnv(
+            initial_messages=[],
+            step_result=MessageStepResult(reward=0.9, episode_done=True, next_messages=[]),
+        )
+        env = EnvFromMessageEnv(
+            renderer=renderer,
+            message_env=msg_env,
+            context_overflow_reward=-0.5,
+            grade_truncated_response=True,
+        )
+
+        result = asyncio.run(env.step([1, 2, 3], extra={"stop_reason": "length"}))
+
+        assert msg_env.step_calls == []
+        assert result.reward == -0.5
+        assert result.episode_done is True
+        assert result.next_observation.length == 0
+        assert result.metrics == {"max_tokens_reached": 1.0}
+
+    def test_overflow_reward_when_truncated_message_has_tool_calls(self):
+        """A cut-off tool call from a custom renderer is not treated as an answer."""
+        tool_call = ToolCall(function=ToolCall.FunctionBody(name="f", arguments="{}"))
+        renderer = _make_renderer(
+            truncated_message={"role": "assistant", "content": "x", "tool_calls": [tool_call]}
+        )
+        msg_env = StubMessageEnv(
+            initial_messages=[],
+            step_result=MessageStepResult(reward=0.9, episode_done=True, next_messages=[]),
+        )
+        env = EnvFromMessageEnv(
+            renderer=renderer,
+            message_env=msg_env,
+            context_overflow_reward=-0.5,
+            grade_truncated_response=True,
+        )
+
+        result = asyncio.run(env.step([1, 2, 3], extra={"stop_reason": "length"}))
+
+        assert msg_env.step_calls == []
+        assert result.reward == -0.5
+        assert result.metrics == {"max_tokens_reached": 1.0}
 
     def test_episode_ends_even_if_env_would_continue(self):
         """A truncated response cannot be continued, so the episode ends regardless."""
-        renderer = _make_renderer(parse_success=False)
+        renderer = _make_renderer(truncated_message=self._ANSWER)
         msg_env = StubMessageEnv(
             initial_messages=[],
             step_result=MessageStepResult(
@@ -620,8 +672,8 @@ class TestGradeTruncatedResponse:
         renderer.build_generation_prompt.assert_not_called()
 
     def test_stop_reason_stop_unaffected(self):
-        """The flag only changes handling of stop_reason='length'."""
-        renderer = _make_renderer(gen_prompt_tokens=[10, 20])
+        """The flag does not change a successfully parsed stop_reason='stop' response."""
+        renderer = _make_renderer(gen_prompt_tokens=[10, 20], truncated_message=self._ANSWER)
         msg_env = StubMessageEnv(
             initial_messages=[],
             step_result=MessageStepResult(
@@ -640,6 +692,30 @@ class TestGradeTruncatedResponse:
         assert result.episode_done is False
         assert result.next_observation.length == 2
         assert "max_tokens_reached" not in result.metrics
+        renderer.parse_truncated_response.assert_not_called()
+
+    @pytest.mark.parametrize("extra", [{"stop_reason": "stop"}, None])
+    def test_ordinary_parse_failure_unaffected(self, extra: ActionExtra | None):
+        """A parse failure that is not a truncation still gets failed_parse_reward."""
+        renderer = _make_renderer(parse_success=False, truncated_message=self._ANSWER)
+        msg_env = StubMessageEnv(
+            initial_messages=[],
+            step_result=MessageStepResult(reward=0.9, episode_done=True, next_messages=[]),
+        )
+        env = EnvFromMessageEnv(
+            renderer=renderer,
+            message_env=msg_env,
+            failed_parse_reward=-2.0,
+            grade_truncated_response=True,
+        )
+
+        result = asyncio.run(env.step([1, 2], extra=extra))
+
+        assert result.reward == -2.0
+        assert result.episode_done is True
+        assert result.metrics == {"parse_error": 1.0}
+        assert msg_env.step_calls == []
+        renderer.parse_truncated_response.assert_not_called()
 
 
 class TestStepThreading:

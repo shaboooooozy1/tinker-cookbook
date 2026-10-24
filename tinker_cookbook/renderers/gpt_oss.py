@@ -24,6 +24,7 @@ from tinker_cookbook.renderers.base import (
     UnparsedToolCall,
     ensure_list,
     ensure_text,
+    get_text_content,
 )
 from tinker_cookbook.tokenizer_utils import Tokenizer
 
@@ -456,6 +457,24 @@ class GptOssRenderer(Renderer):
             message["unparsed_tool_calls"] = unparsed
 
         return message, True
+
+    def parse_truncated_response(self, response: list[int]) -> Message | None:
+        """Parse a truncated response only if the cut fell inside a final-channel message."""
+        if self._return_token in response or self._call_token in response:
+            return None
+        harmony_messages = self._parse_harmony_messages(str(self.tokenizer.decode(response)))
+        if not harmony_messages:
+            return None
+        last = harmony_messages[-1]
+        # Analysis is reasoning, commentary is a preamble or a tool call: neither is an answer.
+        if last["channel"] != "final" or last["recipient"]:
+            return None
+        message = self._parse_as_if_stopped(response)
+        if message is None or message.get("tool_calls") or message.get("unparsed_tool_calls"):
+            return None
+        if not get_text_content(message).strip():
+            return None
+        return message
 
     def to_openai_message(self, message: Message) -> dict:
         """Convert a Message to OpenAI API format with reasoning_content for thinking.

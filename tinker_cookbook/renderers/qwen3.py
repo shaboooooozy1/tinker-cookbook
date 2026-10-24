@@ -230,6 +230,11 @@ class Qwen3Renderer(Renderer):
 
         return assistant_message, True
 
+    _tool_call_markers = ("<tool_call>",)
+
+    def parse_truncated_response(self, response: list[int]) -> Message | None:
+        return self._parse_truncated_answer(response)
+
     def _parse_response_for_streaming(self, response: list[int]) -> tuple[Message, bool]:
         """Parse response for streaming, always applying full content parsing.
 

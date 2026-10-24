@@ -4,9 +4,19 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from PIL import Image
 
-from tinker_cookbook.renderers.base import ImagePart, Message, TextPart, ToolCall, ToolSpec
+from tinker_cookbook.renderers import get_renderer
+from tinker_cookbook.renderers.base import (
+    ImagePart,
+    Message,
+    TextPart,
+    ToolCall,
+    ToolSpec,
+    get_text_content,
+)
+from tinker_cookbook.tokenizer_utils import get_tokenizer
 from tinker_cookbook.tool_use.agent_tool_message_env import (
     AgentToolMessageEnv,
     build_agent_tool_env,
@@ -384,3 +394,104 @@ class TestBuildAgentToolEnv:
         )
 
         assert env.grade_truncated_response is False
+
+
+# ---------------------------------------------------------------------------
+# Grading truncated responses end to end, with real renderers
+# ---------------------------------------------------------------------------
+
+
+class _AnswerGrader:
+    """reward_fn that scores 1.0 iff the final answer text (no reasoning) has print(42)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, history: list[Message]) -> tuple[float, dict[str, float]]:
+        self.calls += 1
+        return (1.0 if "print(42)" in get_text_content(history[-1]) else 0.0), {}
+
+
+@pytest.mark.parametrize(
+    "model_name,renderer_name",
+    [
+        ("Qwen/Qwen3-8B", "qwen3"),
+        ("Qwen/Qwen3.5-35B-A3B", "qwen3_5"),
+        ("openai/gpt-oss-20b", "gpt_oss_medium_reasoning"),
+    ],
+)
+class TestGradeTruncatedResponseEndToEnd:
+    """A draft inside unfinished reasoning must never be graded as the answer."""
+
+    _USER: Message = {"role": "user", "content": "Write the program."}
+
+    def _run(
+        self, model_name: str, renderer_name: str, reasoning: str, answer: str, cut_marker: str
+    ) -> tuple[float, dict[str, float], _AnswerGrader]:
+        renderer = get_renderer(renderer_name, get_tokenizer(model_name))
+        assistant: Message = {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": reasoning},
+                {"type": "text", "text": answer},
+            ],
+        }
+        prompt = renderer.build_generation_prompt([self._USER]).to_ints()
+        sampled = renderer.build_supervised_example([self._USER, assistant])[0].to_ints()
+        sampled = sampled[len(prompt) :]
+        cut = next(
+            sampled[:end]
+            for end in range(1, len(sampled) + 1)
+            if cut_marker in str(renderer.tokenizer.decode(sampled[:end]))
+        )
+        grader = _AnswerGrader()
+        env = build_agent_tool_env(
+            renderer=renderer,
+            tools=[],
+            initial_messages=[self._USER],
+            reward_fn=grader,
+            context_overflow_reward=-0.1,
+            grade_truncated_response=True,
+        )
+        asyncio.run(env.initial_observation())
+        result = asyncio.run(env.step(cut, extra={"stop_reason": "length"}))
+        assert result.episode_done is True
+        return result.reward, result.metrics, grader
+
+    def test_cut_inside_reasoning_gets_overflow_reward(self, model_name: str, renderer_name: str):
+        reward, metrics, grader = self._run(
+            model_name,
+            renderer_name,
+            reasoning="Draft: print(42). Now let me double-check the edge cases",
+            answer="I could not solve this.",
+            cut_marker="print(42)",
+        )
+
+        assert reward == -0.1
+        assert metrics == {"max_tokens_reached": 1.0}
+        assert grader.calls == 0
+
+    def test_cut_inside_answer_is_graded(self, model_name: str, renderer_name: str):
+        reward, metrics, grader = self._run(
+            model_name,
+            renderer_name,
+            reasoning="Draft: print(41). That is off by one.",
+            answer="The answer is print(42) because the count starts at one.",
+            cut_marker="print(42)",
+        )
+
+        assert reward == 1.0
+        assert metrics["max_tokens_graded"] == 1.0
+        assert grader.calls == 1
+
+    def test_only_answer_text_is_graded(self, model_name: str, renderer_name: str):
+        reward, _, grader = self._run(
+            model_name,
+            renderer_name,
+            reasoning="Draft: print(42). Hmm, maybe not.",
+            answer="The answer is print(43) because the count starts at zero.",
+            cut_marker="The answer is",
+        )
+
+        assert reward == 0.0
+        assert grader.calls == 1

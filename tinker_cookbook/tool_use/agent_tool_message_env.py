@@ -157,9 +157,11 @@ def build_agent_tool_env(
             *max_trajectory_tokens*, preventing context overflow errors.
         context_overflow_reward: Reward assigned when the episode is terminated due to
             context overflow. Defaults to -0.1.
-        grade_truncated_response: If True, a response cut off at max_tokens is still
-            graded by *reward_fn* instead of receiving *context_overflow_reward*. The
-            episode ends either way.
+        grade_truncated_response: If True, a response cut off at max_tokens inside its
+            final answer is still graded by *reward_fn* instead of receiving
+            *context_overflow_reward*. A response cut off inside reasoning or a tool call
+            still receives *context_overflow_reward*. The episode ends either way. See
+            ``EnvFromMessageEnv``.
 
     Returns:
         An EnvFromMessageEnv ready for RL training.

@@ -94,6 +94,9 @@ class KimiK25Renderer(KimiK2Renderer):
             prefill = "<think>"
         return super().build_generation_prompt(messages, role=role, prefill=prefill)
 
+    # The default prefill is <think>, so sampling starts inside reasoning.
+    _prefills_reasoning = True
+
     def _normalize_response_tokens(self, response: list[int]) -> list[int]:
         """Restore the synthetic <think> prefill before parsing sampled tokens."""
         if (
@@ -141,6 +144,8 @@ class KimiK25DisableThinkingRenderer(KimiK25Renderer):
         <|im_user|>user<|im_middle|>Hello<|im_end|>
         <|im_assistant|>assistant<|im_middle|><think></think>
     """
+
+    _prefills_reasoning = False
 
     def build_generation_prompt(
         self, messages: list[Message], role: Role = "assistant", prefill: str | None = None

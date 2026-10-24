@@ -1137,6 +1137,69 @@ class Renderer(ABC):
         """
         ...
 
+    _prefills_reasoning: bool = False
+    """Whether build_generation_prompt opens a reasoning block (e.g. prefills ``<think>``),
+    so that sampled tokens start inside it."""
+
+    _tool_call_markers: tuple[str, ...] = ()
+    """Strings that open tool-call markup in this renderer's output format."""
+
+    def parse_truncated_response(self, response: list[int]) -> Message | None:
+        """Parse a response that ended because sampling hit max_tokens.
+
+        A truncated response has no stop sequence, so parse_response reports failure and
+        returns the raw decoded text: reasoning is not separated from the answer and tool
+        calls are not extracted. This method instead returns the message parsed as if the
+        model had stopped at the cut, but only when the cut fell inside the final answer
+        text. It returns None when the cut fell inside a reasoning block, before any
+        answer text, or after tool-call markup started, so that callers never grade
+        reasoning or a half-written tool call as an answer.
+
+        The default implementation returns None. Renderers opt in by overriding it.
+        """
+        return None
+
+    def _parse_as_if_stopped(self, response: list[int]) -> Message | None:
+        """Run parse_response as if the first stop sequence had been sampled after response."""
+        stop_sequences = self.get_stop_sequences()
+        if not stop_sequences:
+            return None
+        stop = stop_sequences[0]
+        if isinstance(stop, int):
+            stop_tokens = [stop]
+        else:
+            stop_tokens = self.tokenizer.encode(stop, add_special_tokens=False)
+        try:
+            message, parse_success = self.parse_response([*response, *stop_tokens])
+        except RendererError:
+            return None
+        return message if parse_success else None
+
+    def _parse_truncated_answer(self, response: list[int]) -> Message | None:
+        """parse_truncated_response for renderers that mark reasoning with <think> tags.
+
+        Also correct for renderers with no reasoning channel, whose output never contains
+        the tags. Uses ``_prefills_reasoning`` and ``_tool_call_markers``.
+        """
+        text = str(self.tokenizer.decode(self._normalize_response_tokens(response)))
+        think_open = text.rfind(_THINK_OPEN_TAG)
+        think_close = text.rfind(_THINK_CLOSE_TAG)
+        if self._prefills_reasoning and think_close == -1:
+            # Sampling started inside the prefilled reasoning block and never left it.
+            return None
+        if think_open > think_close:
+            # The last reasoning block was opened and not closed.
+            return None
+        if any(marker in text for marker in self._tool_call_markers):
+            return None
+        message = self._parse_as_if_stopped(response)
+        if message is None or message.get("tool_calls") or message.get("unparsed_tool_calls"):
+            return None
+        answer = get_text_content(message)
+        if not answer.strip() or _THINK_OPEN_TAG in answer or _THINK_CLOSE_TAG in answer:
+            return None
+        return message
+
     supports_streaming: bool = False
     """Whether this renderer supports streaming response parsing.
 

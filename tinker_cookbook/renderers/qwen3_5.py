@@ -132,6 +132,9 @@ class Qwen3_5Renderer(Qwen3VLRenderer):
             )
         )
 
+    # The generation suffix ends with <think>\n, so sampling starts inside reasoning.
+    _prefills_reasoning = True
+
     def _normalize_response_tokens(self, response: list[int]) -> list[int]:
         """Restore the prefilled <think>\\n before parsing sampled tokens.
 
@@ -296,6 +299,8 @@ class Qwen3_5DisableThinkingRenderer(Qwen3_5Renderer):
     from Qwen3_5Renderer is the generation suffix: <think>\\n\\n</think>\\n\\n instead
     of <think>\\n, signaling to the model to respond directly without reasoning.
     """
+
+    _prefills_reasoning = False
 
     def _get_generation_suffix(self, role: Role, ctx: RenderContext) -> list[int]:
         maybe_newline = "\n" if ctx.idx > 0 else ""
