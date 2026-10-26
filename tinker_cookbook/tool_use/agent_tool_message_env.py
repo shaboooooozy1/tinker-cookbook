@@ -139,6 +139,7 @@ def build_agent_tool_env(
     max_trajectory_tokens: int | None = None,
     max_generation_tokens: int | None = None,
     context_overflow_reward: float = -0.1,
+    grade_truncated_response: bool = False,
 ) -> EnvFromMessageEnv:
     """Convenience method to build an EnvFromMessageEnv for tool-using agents.
 
@@ -156,6 +157,11 @@ def build_agent_tool_env(
             *max_trajectory_tokens*, preventing context overflow errors.
         context_overflow_reward: Reward assigned when the episode is terminated due to
             context overflow. Defaults to -0.1.
+        grade_truncated_response: If True, a response cut off at max_tokens inside its
+            final answer is still graded by *reward_fn* instead of receiving
+            *context_overflow_reward*. A response cut off inside reasoning or a tool call
+            still receives *context_overflow_reward*. The episode ends either way. See
+            ``EnvFromMessageEnv``.
 
     Returns:
         An EnvFromMessageEnv ready for RL training.
@@ -173,4 +179,5 @@ def build_agent_tool_env(
         max_trajectory_tokens=max_trajectory_tokens,
         max_generation_tokens=max_generation_tokens,
         context_overflow_reward=context_overflow_reward,
+        grade_truncated_response=grade_truncated_response,
     )

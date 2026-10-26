@@ -31,6 +31,9 @@ class CLIConfig:
     groups_per_batch: int = 100
     learning_rate: float = 1e-5
     max_tokens: int = 4096
+    # Grade a response cut off at max_tokens inside its final answer instead of assigning the
+    # context-overflow penalty. A cut inside reasoning or a tool call is still penalized.
+    grade_truncated_response: bool = False
     kl_penalty_coef: float = 0.0
     num_substeps: int = 1
 
@@ -93,6 +96,7 @@ async def cli_main(cli_config: CLIConfig) -> None:
         seed=cli_config.seed,
         sandbox_backend=cli_config.sandbox_backend,
         max_generation_tokens=cli_config.max_tokens,
+        grade_truncated_response=cli_config.grade_truncated_response,
     )
 
     config = Config(

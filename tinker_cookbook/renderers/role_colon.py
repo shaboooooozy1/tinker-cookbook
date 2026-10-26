@@ -83,6 +83,11 @@ class RoleColonRenderer(Renderer):
             )
             return Message(role="assistant", content=splitted[0].strip()), False
 
+    def parse_truncated_response(
+        self, response: list[int], prompt: tinker.ModelInput | None = None
+    ) -> Message | None:
+        return self._parse_truncated_answer(response, prompt)
+
     @property
     def _bos_tokens(self) -> list[int]:
         bos_token_str = self.tokenizer.bos_token

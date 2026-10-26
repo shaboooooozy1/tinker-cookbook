@@ -182,6 +182,7 @@ class DeepcoderEnvGroupBuilder(EnvGroupBuilder):
     max_trajectory_tokens: int = 32 * 1024
     max_generation_tokens: int | None = None
     context_overflow_reward: float = -0.1
+    grade_truncated_response: bool = False
 
     async def make_envs(self) -> Sequence[Env]:
         # Renderer is stateless, share across all envs in group
@@ -208,6 +209,7 @@ class DeepcoderEnvGroupBuilder(EnvGroupBuilder):
                     max_trajectory_tokens=self.max_trajectory_tokens,
                     max_generation_tokens=self.max_generation_tokens,
                     context_overflow_reward=self.context_overflow_reward,
+                    grade_truncated_response=self.grade_truncated_response,
                     max_turns=self.max_turns,
                 )
             )
@@ -252,6 +254,7 @@ class DeepcoderDatasetBuilder(RLDatasetBuilder):
     seed: int = 0
     max_generation_tokens: int | None = None
     context_overflow_reward: float = -0.1
+    grade_truncated_response: bool = False
 
     async def __call__(self) -> tuple[RLDataset, RLDataset | None]:
         # Load train tasks
@@ -268,6 +271,7 @@ class DeepcoderDatasetBuilder(RLDatasetBuilder):
                 format_coef=self.format_coef,
                 max_generation_tokens=self.max_generation_tokens,
                 context_overflow_reward=self.context_overflow_reward,
+                grade_truncated_response=self.grade_truncated_response,
             )
             for task in train_tasks
         ]
@@ -290,6 +294,7 @@ class DeepcoderDatasetBuilder(RLDatasetBuilder):
                 format_coef=self.format_coef,
                 max_generation_tokens=self.max_generation_tokens,
                 context_overflow_reward=self.context_overflow_reward,
+                grade_truncated_response=self.grade_truncated_response,
             )
             for task in test_tasks
         ]
