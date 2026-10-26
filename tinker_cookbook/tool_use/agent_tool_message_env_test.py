@@ -426,7 +426,13 @@ class TestGradeTruncatedResponseEndToEnd:
     _USER: Message = {"role": "user", "content": "Write the program."}
 
     def _run(
-        self, model_name: str, renderer_name: str, reasoning: str, answer: str, cut_marker: str
+        self,
+        model_name: str,
+        renderer_name: str,
+        reasoning: str,
+        answer: str,
+        cut_marker: str,
+        grade_truncated_response: bool = True,
     ) -> tuple[float, dict[str, float], _AnswerGrader]:
         renderer = get_renderer(renderer_name, get_tokenizer(model_name))
         assistant: Message = {
@@ -451,7 +457,7 @@ class TestGradeTruncatedResponseEndToEnd:
             initial_messages=[self._USER],
             reward_fn=grader,
             context_overflow_reward=-0.1,
-            grade_truncated_response=True,
+            grade_truncated_response=grade_truncated_response,
         )
         asyncio.run(env.initial_observation())
         result = asyncio.run(env.step(cut, extra={"stop_reason": "length"}))
@@ -483,6 +489,20 @@ class TestGradeTruncatedResponseEndToEnd:
         assert reward == 1.0
         assert metrics["max_tokens_graded"] == 1.0
         assert grader.calls == 1
+
+    def test_cut_inside_answer_not_graded_when_flag_off(self, model_name: str, renderer_name: str):
+        reward, metrics, grader = self._run(
+            model_name,
+            renderer_name,
+            reasoning="Draft: print(41). That is off by one.",
+            answer="The answer is print(42) because the count starts at one.",
+            cut_marker="print(42)",
+            grade_truncated_response=False,
+        )
+
+        assert reward == -0.1
+        assert metrics == {"max_tokens_reached": 1.0}
+        assert grader.calls == 0
 
     def test_only_answer_text_is_graded(self, model_name: str, renderer_name: str):
         reward, _, grader = self._run(

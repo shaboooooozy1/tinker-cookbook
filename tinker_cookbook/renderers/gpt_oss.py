@@ -469,6 +469,9 @@ class GptOssRenderer(Renderer):
         # Analysis is reasoning, commentary is a preamble or a tool call: neither is an answer.
         if last["channel"] != "final" or last["recipient"]:
             return None
+        # The final message has not produced any text yet.
+        if not (last["content"] or "").strip():
+            return None
         message = self._parse_as_if_stopped(response)
         if message is None or message.get("tool_calls") or message.get("unparsed_tool_calls"):
             return None

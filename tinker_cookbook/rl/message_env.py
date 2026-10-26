@@ -58,13 +58,14 @@ class EnvFromMessageEnv(types.Env):
     ``context_overflow_reward`` is assigned.
 
     With ``grade_truncated_response=True``, a response that was cut off inside its
-    final answer is passed to the MessageEnv and its reward is kept. The renderer
-    decides this with ``Renderer.parse_truncated_response``: the response is parsed as
-    if the model had stopped at the cut, so reasoning is separated from the answer as
-    usual. A response cut off inside reasoning, before any answer text, or inside a
-    tool call still gets ``context_overflow_reward``, as does any response from a
-    renderer that does not implement the method. Graded truncations report the metric
-    ``max_tokens_graded``.
+    final answer is passed to the MessageEnv, and its reward is kept if the MessageEnv
+    ends the episode on it. The renderer decides whether the cut fell inside the answer
+    with ``Renderer.parse_truncated_response``: the response is parsed as if the model
+    had stopped at the cut, so reasoning is separated from the answer as usual. A
+    response cut off inside reasoning, before any answer text, or inside a tool call
+    still gets ``context_overflow_reward``, as does any response from a renderer that
+    does not implement the method, and any response the MessageEnv would have
+    continued from. Graded truncations report the metric ``max_tokens_graded``.
     """
 
     def __init__(
@@ -181,9 +182,9 @@ class EnvFromMessageEnv(types.Env):
         )
 
     async def _step_truncated(self, action: types.Action) -> types.StepResult:
-        """Grade a response that hit max_tokens if it was cut inside its answer."""
+        """Grade a response that hit max_tokens if it was cut inside its final answer."""
         assistant_message = self.renderer.parse_truncated_response(action)
-        # The tool-call check guards custom renderers: a cut-off tool call is not an answer.
+        # Guards custom renderers that return tool-call fields: a tool call is not an answer.
         if (
             assistant_message is None
             or assistant_message.get("tool_calls")
@@ -191,8 +192,18 @@ class EnvFromMessageEnv(types.Env):
         ):
             return self._max_tokens_result()
         msg_step = await self.message_env.step(assistant_message)
-        # There is no end-of-turn token to continue from, so the episode ends even if
-        # the MessageEnv did not end it.
+        if not msg_step.episode_done:
+            # The MessageEnv would have continued, so its reward for this step is not a
+            # grade of the episode. With no end-of-turn token the episode cannot continue,
+            # so it ends with context_overflow_reward, as in the context-limit branch.
+            return types.StepResult(
+                reward=self.context_overflow_reward,
+                episode_done=True,
+                next_observation=tinker.ModelInput.empty(),
+                next_stop_condition=self._base_stop_condition,
+                metrics={**msg_step.metrics, "max_tokens_reached": 1.0},
+                logs=msg_step.logs,
+            )
         return types.StepResult(
             reward=msg_step.reward,
             episode_done=True,

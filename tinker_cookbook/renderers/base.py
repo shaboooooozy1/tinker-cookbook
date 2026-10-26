@@ -1168,7 +1168,11 @@ class Renderer(ABC):
         if isinstance(stop, int):
             stop_tokens = [stop]
         else:
-            stop_tokens = self.tokenizer.encode(stop, add_special_tokens=False)
+            # A multi-token stop string may have been cut partway through; complete it
+            # instead of appending a second copy, so the partial stop is not kept as text.
+            text = str(self.tokenizer.decode(response))
+            sampled = _longest_matching_suffix_prefix(text, stop)
+            stop_tokens = self.tokenizer.encode(stop[sampled:], add_special_tokens=False)
         try:
             message, parse_success = self.parse_response([*response, *stop_tokens])
         except RendererError:

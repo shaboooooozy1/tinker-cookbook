@@ -135,10 +135,15 @@ def test_cut_inside_reasoning_returns_none(model_name: str, renderer_name: str):
 def test_cut_before_any_answer_text_returns_none(model_name: str, renderer_name: str):
     renderer = _make_renderer(model_name, renderer_name)
     tokens = _sampled_tokens(renderer, _answer_message(has_reasoning=True))
-    # Cut just after the reasoning ends: the answer has not started yet.
-    reasoning_end = "<|end|>" if renderer_name.startswith("gpt_oss") else "</think>"
+    # Cut just after the reasoning ends, and for gpt-oss also just after the final
+    # message's header: the answer has not started yet.
+    if renderer_name.startswith("gpt_oss"):
+        markers = ["<|end|>", "<|channel|>final<|message|>"]
+    else:
+        markers = ["</think>"]
 
-    assert renderer.parse_truncated_response(_cut_after(renderer, tokens, reasoning_end)) is None
+    for marker in markers:
+        assert renderer.parse_truncated_response(_cut_after(renderer, tokens, marker)) is None
 
 
 @pytest.mark.parametrize(
@@ -169,11 +174,60 @@ def test_tool_call_returns_none(model_name: str, renderer_name: str, has_reasoni
 
     assert renderer.parse_truncated_response(tokens) is None
     assert renderer.parse_truncated_response(_cut_after(renderer, tokens, "print(1)")) is None
+    if renderer_name.startswith("gpt_oss"):
+        # gpt-oss renders the text as a commentary preamble before the tool call. A cut
+        # inside the preamble, or inside the tool call's header, is not an answer either.
+        assert renderer.parse_truncated_response(_cut_after(renderer, tokens, "Check")) is None
+        header = "<|start|>assistant to="
+        assert renderer.parse_truncated_response(_cut_after(renderer, tokens, header)) is None
 
 
-def test_role_colon_cut_inside_answer():
+@pytest.mark.parametrize(
+    "sampled,expected",
+    [
+        (" The final answer is print(42)", "The final answer is print(42)"),
+        # Cut inside the multi-token stop string: the partial stop is not part of the answer.
+        (" The final answer is print(42)\n\nUser", "The final answer is print(42)"),
+        (" The final answer is print(42)\n\n", "The final answer is print(42)"),
+        (" \n\nUser", None),
+    ],
+)
+def test_role_colon_truncated_response(sampled: str, expected: str | None):
     renderer = _make_renderer("meta-llama/Llama-3.2-1B-Instruct", "role_colon")
-    tokens = renderer.tokenizer.encode(" The final answer is print(42)", add_special_tokens=False)
+    tokens = renderer.tokenizer.encode(sampled, add_special_tokens=False)
+
+    message = renderer.parse_truncated_response(tokens)
+
+    if expected is None:
+        assert message is None
+    else:
+        assert message is not None
+        assert get_text_content(message) == expected
+
+
+@pytest.mark.parametrize(
+    "sampled",
+    [
+        "<|channel|>final<|message|>",
+        "<|channel|>final<|message|>   ",
+        "<|channel|>analysis<|message|>Thinking.<|end|><|start|>assistant<|channel|>final<|message|>",
+        "<|channel|>commentary<|message|>Let me check.<|end|>"
+        "<|start|>assistant<|channel|>final<|message|>",
+    ],
+    ids=["empty_final", "whitespace_final", "after_analysis", "after_preamble"],
+)
+def test_gpt_oss_empty_final_message_returns_none(sampled: str):
+    renderer = _make_renderer("openai/gpt-oss-20b", "gpt_oss_medium_reasoning")
+    tokens = renderer.tokenizer.encode(sampled, add_special_tokens=False)
+
+    assert renderer.parse_truncated_response(tokens) is None
+
+
+def test_gpt_oss_final_message_without_analysis():
+    renderer = _make_renderer("openai/gpt-oss-20b", "gpt_oss_medium_reasoning")
+    tokens = renderer.tokenizer.encode(
+        "<|channel|>final<|message|>The final answer is print(42)", add_special_tokens=False
+    )
 
     message = renderer.parse_truncated_response(tokens)
 

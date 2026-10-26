@@ -1,10 +1,12 @@
 """Tests that code_rl threads grade_truncated_response from the CLI down to each env."""
 
 import asyncio
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from tinker_cookbook.recipes.code_rl import train
 from tinker_cookbook.recipes.code_rl.code_env import (
     DeepcoderDatasetBuilder,
     DeepcoderEnvGroupBuilder,
@@ -64,6 +66,25 @@ def test_flag_reaches_train_and_test_builders(flag: bool):
 def test_flag_is_off_by_default():
     assert all(b.grade_truncated_response is False for b in _build_datasets())
     assert CLIConfig().grade_truncated_response is False
+
+
+@pytest.mark.parametrize("flag", [True, False])
+def test_cli_forwards_flag_to_dataset_builder(flag: bool, tmp_path: Path):
+    cli_config = CLIConfig(
+        model_name="Qwen/Qwen3-8B",
+        renderer_name="qwen3",
+        log_path=str(tmp_path),
+        grade_truncated_response=flag,
+    )
+    with (
+        patch.object(train, "main", new=AsyncMock()) as main,
+        patch.object(train.cli_utils, "check_log_dir"),
+    ):
+        asyncio.run(train.cli_main(cli_config))
+
+    config = main.call_args.args[0]
+    assert isinstance(config.dataset_builder, DeepcoderDatasetBuilder)
+    assert config.dataset_builder.grade_truncated_response is flag
 
 
 @pytest.mark.parametrize("flag", [True, False])
