@@ -300,8 +300,10 @@ class _DeepSeekV3BaseRenderer(Renderer):
 
     _tool_call_markers = ("<｜tool▁calls▁begin｜>", "<｜tool▁call▁begin｜>")
 
-    def parse_truncated_response(self, response: list[int]) -> Message | None:
-        return self._parse_truncated_answer(response)
+    def parse_truncated_response(
+        self, response: list[int], prompt: tinker.ModelInput | None = None
+    ) -> Message | None:
+        return self._parse_truncated_answer(response, prompt)
 
     def _parse_response_for_streaming(self, response: list[int]) -> tuple[Message, bool]:
         """Parse response for streaming, always applying full content parsing.
@@ -469,8 +471,8 @@ class DeepSeekV3ThinkingRenderer(_DeepSeekV3BaseRenderer):
         think_prefill = "<think>" + (prefill or "")
         return super().build_generation_prompt(messages, role, think_prefill)
 
-    # Sampling starts inside the prefilled <think> block. After a tool response there is
-    # no prefill, so a truncated answer there is never graded; that errs on the safe side.
+    # Sampling usually starts inside the prefilled <think> block. After a tool response
+    # there is no prefill; parse_truncated_response sees that when it is given the prompt.
     _prefills_reasoning = True
 
     def _normalize_response_tokens(self, response: list[int]) -> list[int]:

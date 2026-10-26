@@ -232,8 +232,10 @@ class Qwen3Renderer(Renderer):
 
     _tool_call_markers = ("<tool_call>",)
 
-    def parse_truncated_response(self, response: list[int]) -> Message | None:
-        return self._parse_truncated_answer(response)
+    def parse_truncated_response(
+        self, response: list[int], prompt: tinker.ModelInput | None = None
+    ) -> Message | None:
+        return self._parse_truncated_answer(response, prompt)
 
     def _parse_response_for_streaming(self, response: list[int]) -> tuple[Message, bool]:
         """Parse response for streaming, always applying full content parsing.

@@ -592,7 +592,8 @@ class TestGradeTruncatedResponse:
 
         result = asyncio.run(env.step([1, 2, 3], extra={"stop_reason": "length"}))
 
-        renderer.parse_truncated_response.assert_called_once_with([1, 2, 3])
+        # No observation was rendered yet, so the renderer gets no prompt
+        renderer.parse_truncated_response.assert_called_once_with([1, 2, 3], prompt=None)
         renderer.parse_response.assert_not_called()
         assert msg_env.step_calls == [self._ANSWER]
         assert result.reward == 0.9
@@ -604,6 +605,33 @@ class TestGradeTruncatedResponse:
             "max_tokens_graded": 1.0,
         }
         assert result.logs == {"assistant_content": "partial answer"}
+
+    def test_renderer_gets_the_prompt_the_action_was_sampled_from(self):
+        """parse_truncated_response sees the latest observation, which varies per turn."""
+        renderer = _make_renderer(gen_prompt_tokens=[10, 20], truncated_message=self._ANSWER)
+        second_prompt = _make_model_input([10, 20, 30, 40])
+        msg_env = StubMessageEnv(
+            initial_messages=[{"role": "user", "content": "hi"}],
+            step_result=MessageStepResult(
+                reward=0.0,
+                episode_done=False,
+                next_messages=[{"role": "user", "content": "x"}],
+            ),
+        )
+        env = EnvFromMessageEnv(
+            renderer=renderer, message_env=msg_env, grade_truncated_response=True
+        )
+
+        first_prompt, _ = asyncio.run(env.initial_observation())
+        asyncio.run(env.step([1], extra={"stop_reason": "length"}))
+        assert renderer.parse_truncated_response.call_args.kwargs["prompt"] is first_prompt
+
+        # A turn that continues makes its next observation the prompt for the next action.
+        renderer.build_generation_prompt.return_value = second_prompt
+        result = asyncio.run(env.step([2], extra={"stop_reason": "stop"}))
+        assert result.next_observation is second_prompt
+        asyncio.run(env.step([3], extra={"stop_reason": "length"}))
+        assert renderer.parse_truncated_response.call_args.kwargs["prompt"] is second_prompt
 
     def test_overflow_reward_when_renderer_finds_no_answer(self):
         """A cut inside reasoning (parse_truncated_response -> None) is not graded."""

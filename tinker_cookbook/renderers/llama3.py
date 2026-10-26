@@ -69,5 +69,7 @@ class Llama3Renderer(Renderer):
     def parse_response(self, response: list[int]) -> tuple[Message, bool]:
         return parse_response_for_stop_token(response, self.tokenizer, self._end_message_token)
 
-    def parse_truncated_response(self, response: list[int]) -> Message | None:
-        return self._parse_truncated_answer(response)
+    def parse_truncated_response(
+        self, response: list[int], prompt: tinker.ModelInput | None = None
+    ) -> Message | None:
+        return self._parse_truncated_answer(response, prompt)

@@ -458,8 +458,13 @@ class GptOssRenderer(Renderer):
 
         return message, True
 
-    def parse_truncated_response(self, response: list[int]) -> Message | None:
-        """Parse a truncated response only if the cut fell inside a final-channel message."""
+    def parse_truncated_response(
+        self, response: list[int], prompt: tinker.ModelInput | None = None
+    ) -> Message | None:
+        """Parse a truncated response only if the cut fell inside a final-channel message.
+
+        Harmony channels mark reasoning in the response itself, so *prompt* is not needed.
+        """
         if self._return_token in response or self._call_token in response:
             return None
         harmony_messages = self._parse_harmony_messages(str(self.tokenizer.decode(response)))

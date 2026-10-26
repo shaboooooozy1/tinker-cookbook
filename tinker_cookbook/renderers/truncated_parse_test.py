@@ -8,6 +8,7 @@ remove the stop token and cut the remaining tokens at chosen points.
 from __future__ import annotations
 
 import pytest
+import tinker
 
 from tinker_cookbook.renderers import get_renderer
 from tinker_cookbook.renderers.base import (
@@ -63,6 +64,11 @@ def _sampled_tokens(renderer: Renderer, assistant: Message) -> list[int]:
     return response
 
 
+def _prompt(renderer: Renderer, with_prompt: bool) -> tinker.ModelInput | None:
+    """The generation prompt the sampled tokens follow, or None to test the fallback."""
+    return renderer.build_generation_prompt([_USER]) if with_prompt else None
+
+
 def _cut_after(renderer: Renderer, tokens: list[int], marker: str) -> list[int]:
     """Shortest prefix of *tokens* whose decoded text contains *marker*."""
     for end in range(1, len(tokens) + 1):
@@ -83,14 +89,17 @@ def _answer_message(has_reasoning: bool) -> Message:
     return {"role": "assistant", "content": ANSWER}
 
 
+@pytest.mark.parametrize("with_prompt", [True, False], ids=["prompt", "no_prompt"])
 @pytest.mark.parametrize("model_name,renderer_name,has_reasoning,_", RENDERERS, ids=RENDERER_IDS)
 def test_cut_inside_answer_returns_answer_only(
-    model_name: str, renderer_name: str, has_reasoning: bool, _: bool
+    model_name: str, renderer_name: str, has_reasoning: bool, _: bool, with_prompt: bool
 ):
     renderer = _make_renderer(model_name, renderer_name)
     tokens = _sampled_tokens(renderer, _answer_message(has_reasoning))
 
-    message = renderer.parse_truncated_response(_cut_after(renderer, tokens, "print(42)"))
+    message = renderer.parse_truncated_response(
+        _cut_after(renderer, tokens, "print(42)"), prompt=_prompt(renderer, with_prompt)
+    )
 
     assert message is not None
     answer = get_text_content(message)
@@ -101,30 +110,33 @@ def test_cut_inside_answer_returns_answer_only(
     assert not message.get("tool_calls")
 
 
+@pytest.mark.parametrize("with_prompt", [True, False], ids=["prompt", "no_prompt"])
 @pytest.mark.parametrize("model_name,renderer_name,has_reasoning,_", RENDERERS, ids=RENDERER_IDS)
 def test_whole_response_without_stop_token(
-    model_name: str, renderer_name: str, has_reasoning: bool, _: bool
+    model_name: str, renderer_name: str, has_reasoning: bool, _: bool, with_prompt: bool
 ):
     """A response cut exactly where the stop token would go parses like a stopped one."""
     renderer = _make_renderer(model_name, renderer_name)
     tokens = _sampled_tokens(renderer, _answer_message(has_reasoning))
 
-    message = renderer.parse_truncated_response(tokens)
+    message = renderer.parse_truncated_response(tokens, prompt=_prompt(renderer, with_prompt))
 
     assert message is not None
     assert get_text_content(message).strip() == ANSWER
 
 
+@pytest.mark.parametrize("with_prompt", [True, False], ids=["prompt", "no_prompt"])
 @pytest.mark.parametrize(
     "model_name,renderer_name",
     [(m, r) for m, r, has_reasoning, _ in RENDERERS if has_reasoning],
     ids=[r for _, r, has_reasoning, _ in RENDERERS if has_reasoning],
 )
-def test_cut_inside_reasoning_returns_none(model_name: str, renderer_name: str):
+def test_cut_inside_reasoning_returns_none(model_name: str, renderer_name: str, with_prompt: bool):
     renderer = _make_renderer(model_name, renderer_name)
     tokens = _sampled_tokens(renderer, _answer_message(has_reasoning=True))
+    cut = _cut_after(renderer, tokens, "print(41)")
 
-    assert renderer.parse_truncated_response(_cut_after(renderer, tokens, "print(41)")) is None
+    assert renderer.parse_truncated_response(cut, prompt=_prompt(renderer, with_prompt)) is None
 
 
 @pytest.mark.parametrize(
@@ -233,6 +245,57 @@ def test_gpt_oss_final_message_without_analysis():
 
     assert message is not None
     assert get_text_content(message) == "The final answer is print(42)"
+
+
+def test_deepseek_thinking_answer_after_tool_response():
+    """deepseekv3_thinking does not prefill <think> after a tool response."""
+    renderer = _make_renderer("deepseek-ai/DeepSeek-V3.1", "deepseekv3_thinking")
+    tool_call = ToolCall(
+        function=ToolCall.FunctionBody(name="check_solution", arguments='{"code": "print(1)"}'),
+        id="call_0",
+    )
+    history: list[Message] = [
+        _USER,
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": REASONING},
+                {"type": "text", "text": "Checking."},
+            ],
+            "tool_calls": [tool_call],
+        },
+        {"role": "tool", "content": "passed", "tool_call_id": "call_0", "name": "check_solution"},
+    ]
+    prompt = renderer.build_generation_prompt(history)
+    full = renderer.build_supervised_example([*history, {"role": "assistant", "content": ANSWER}])
+    full_tokens = full[0].to_ints()
+    assert full_tokens[: prompt.length] == prompt.to_ints()
+    cut = _cut_after(renderer, full_tokens[prompt.length :], "print(42)")
+
+    message = renderer.parse_truncated_response(cut, prompt=prompt)
+
+    assert message is not None
+    assert "print(42)" in get_text_content(message)
+    # Without the prompt the renderer assumes its usual <think> prefill and declines.
+    assert renderer.parse_truncated_response(cut) is None
+
+
+@pytest.mark.parametrize(
+    "model_name,renderer_name",
+    [
+        ("Qwen/Qwen3-8B", "qwen3"),
+        ("Qwen/Qwen3-8B", "qwen3_instruct"),
+        ("Qwen/Qwen3.5-35B-A3B", "qwen3_5_disable_thinking"),
+    ],
+)
+@pytest.mark.parametrize("partial_marker", ["<tool_", "<", "<thi"])
+def test_cut_inside_a_marker_returns_none(model_name: str, renderer_name: str, partial_marker: str):
+    """A cut partway through a marker that opens a tool call or reasoning is not an answer."""
+    renderer = _make_renderer(model_name, renderer_name)
+    # Written out as plain text, the marker spans several tokens and can be cut midway.
+    tokens = renderer.tokenizer.encode(f"{ANSWER}\n{partial_marker}", add_special_tokens=False)
+
+    assert renderer.parse_truncated_response(tokens) is None
 
 
 def test_empty_response_returns_none():

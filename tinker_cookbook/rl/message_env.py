@@ -88,6 +88,8 @@ class EnvFromMessageEnv(types.Env):
         self.context_overflow_reward = context_overflow_reward
         self.grade_truncated_response = grade_truncated_response
         self._base_stop_condition = renderer.get_stop_sequences()
+        # The prompt the next action is sampled from, for parse_truncated_response.
+        self._last_observation: tinker.ModelInput | None = None
 
     async def _render_in_thread(self, messages: list[Message], **kwargs) -> tinker.ModelInput:
         """Run build_generation_prompt in a thread to avoid blocking the event loop.
@@ -119,6 +121,7 @@ class EnvFromMessageEnv(types.Env):
                 f"This task's prompt is too long for the model's context window."
             )
 
+        self._last_observation = model_input
         return model_input, self._base_stop_condition
 
     async def step(
@@ -162,6 +165,7 @@ class EnvFromMessageEnv(types.Env):
                 logs=msg_step.logs,
             )
 
+        self._last_observation = next_observation
         return types.StepResult(
             reward=msg_step.reward,
             episode_done=msg_step.episode_done,
@@ -183,7 +187,9 @@ class EnvFromMessageEnv(types.Env):
 
     async def _step_truncated(self, action: types.Action) -> types.StepResult:
         """Grade a response that hit max_tokens if it was cut inside its final answer."""
-        assistant_message = self.renderer.parse_truncated_response(action)
+        assistant_message = self.renderer.parse_truncated_response(
+            action, prompt=self._last_observation
+        )
         # Guards custom renderers that return tool-call fields: a tool call is not an answer.
         if (
             assistant_message is None

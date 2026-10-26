@@ -1138,13 +1138,16 @@ class Renderer(ABC):
         ...
 
     _prefills_reasoning: bool = False
-    """Whether build_generation_prompt opens a reasoning block (e.g. prefills ``<think>``),
-    so that sampled tokens start inside it."""
+    """Whether build_generation_prompt usually opens a reasoning block (e.g. prefills
+    ``<think>``), so that sampled tokens start inside it. Used by
+    parse_truncated_response when it is not given the prompt."""
 
     _tool_call_markers: tuple[str, ...] = ()
     """Strings that open tool-call markup in this renderer's output format."""
 
-    def parse_truncated_response(self, response: list[int]) -> Message | None:
+    def parse_truncated_response(
+        self, response: list[int], prompt: tinker.ModelInput | None = None
+    ) -> Message | None:
         """Parse a response that ended because sampling hit max_tokens.
 
         A truncated response has no stop sequence, so parse_response reports failure and
@@ -1155,9 +1158,25 @@ class Renderer(ABC):
         answer text, or after tool-call markup started, so that callers never grade
         reasoning or a half-written tool call as an answer.
 
+        Args:
+            response: The sampled tokens.
+            prompt: The generation prompt the response was sampled from, if known. It
+                shows whether sampling started inside a reasoning block, which can vary
+                per turn (e.g. no ``<think>`` prefill after a tool response). Without it,
+                the renderer assumes its usual generation prompt.
+
         The default implementation returns None. Renderers opt in by overriding it.
         """
         return None
+
+    def _starts_inside_reasoning(self, prompt: tinker.ModelInput | None) -> bool:
+        """Whether a response sampled after *prompt* starts inside a reasoning block."""
+        last_chunk = prompt.chunks[-1] if prompt is not None and prompt.chunks else None
+        if not isinstance(last_chunk, tinker.EncodedTextChunk):
+            return self._prefills_reasoning
+        # The generation suffix, including any reasoning prefill, ends the prompt.
+        tail = str(self.tokenizer.decode(list(last_chunk.tokens[-64:])))
+        return tail.rfind(_THINK_OPEN_TAG) > tail.rfind(_THINK_CLOSE_TAG)
 
     def _parse_as_if_stopped(self, response: list[int]) -> Message | None:
         """Run parse_response as if the first stop sequence had been sampled after response."""
@@ -1179,22 +1198,30 @@ class Renderer(ABC):
             return None
         return message if parse_success else None
 
-    def _parse_truncated_answer(self, response: list[int]) -> Message | None:
+    def _parse_truncated_answer(
+        self, response: list[int], prompt: tinker.ModelInput | None
+    ) -> Message | None:
         """parse_truncated_response for renderers that mark reasoning with <think> tags.
 
         Also correct for renderers with no reasoning channel, whose output never contains
-        the tags. Uses ``_prefills_reasoning`` and ``_tool_call_markers``.
+        the tags. Uses ``_prefills_reasoning`` (when *prompt* is None) and
+        ``_tool_call_markers``.
         """
         text = str(self.tokenizer.decode(self._normalize_response_tokens(response)))
         think_open = text.rfind(_THINK_OPEN_TAG)
         think_close = text.rfind(_THINK_CLOSE_TAG)
-        if self._prefills_reasoning and think_close == -1:
-            # Sampling started inside the prefilled reasoning block and never left it.
+        if self._starts_inside_reasoning(prompt) and think_close == -1:
+            # Sampling started inside the prompt's reasoning block and never left it.
             return None
         if think_open > think_close:
             # The last reasoning block was opened and not closed.
             return None
-        if any(marker in text for marker in self._tool_call_markers):
+        markers = (*self._tool_call_markers, _THINK_OPEN_TAG)
+        if any(marker in text for marker in self._tool_call_markers) or any(
+            _longest_matching_suffix_prefix(text, marker) for marker in markers
+        ):
+            # Tool-call markup started, or the cut fell partway through a marker that
+            # opens a tool call or a reasoning block.
             return None
         message = self._parse_as_if_stopped(response)
         if message is None or message.get("tool_calls") or message.get("unparsed_tool_calls"):
